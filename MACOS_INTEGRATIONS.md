@@ -1,6 +1,6 @@
 # macOS Integrations
 
-Agatha uses Apple Events through `/usr/bin/osascript` to create entries in Calendar, Reminders, and Notes, and to read Mail. macOS asks for Automation permission the first time each target app is used. Agatha cannot grant this permission itself; approve the macOS prompt.
+Agatha uses Apple Events through `/usr/bin/osascript` to create entries in Calendar, Reminders, and Notes, to read Mail, and to control Music.app or Spotify when requested. macOS asks for Automation permission the first time each target app is used. Agatha cannot grant this permission itself; approve the macOS prompt.
 
 ## Automation Access
 
@@ -10,13 +10,29 @@ On macOS Monterey, open **System Preferences > Security & Privacy > Privacy > Au
 - Note requests create notes in Notes.app. To-do items are also stored in this project and synchronized to the `Agent To-Do List` note.
 - Timed reminders are exported as alarm-bearing `.ics` files and are **not scheduled until imported**. On this Monterey machine, Reminders.app Apple Events can read lists but due-date writes fail in ReminderKit; Agatha therefore does not claim they succeeded.
 - Email summaries read Mail.app and require an account configured in Mail.
+- Music requests can search the local Music library, control Music.app or Spotify playback, and open supported local audio files in Music.app. The chosen app must be installed and accessible to the logged-in user.
 
 ## Other Privacy Permissions
 
 - **Messages:** reading texts is off by default. To opt in, set `ALLOW_MESSAGES_ACCESS=true` in `.env`, then grant **Full Disk Access** to the launcher under **System Preferences > Security & Privacy > Privacy > Full Disk Access**. Fully quit and reopen the launcher after changing access.
 - **Microphone:** voice input requires permission under **System Preferences > Security & Privacy > Privacy > Microphone**. Approve the prompt for the app that launched Agatha.
+- **Public voice focus:** enable with `enable public voice mode`, or set `AGATHA_PUBLIC_VOICE_MODE=true` before startup. In this mode, microphone transcripts are ignored unless they begin with “Hey Agatha.” This reduces accidental pickup but is not voice biometrics: a passer-by who says the wake phrase can still trigger Agatha. Live speech transcription currently uses the configured SpeechRecognition Google service, so captured audio is sent to that service for recognition.
+- **Music playback:** requests can search the local Music library, control Music.app or Spotify, and open supported local audio files in Music.app. Approve the macOS Automation prompt for Music or Spotify when asked.
+- **Public voice focus:** enable it with `enable public voice mode`, or set `AGATHA_PUBLIC_VOICE_MODE=true` before startup. In this mode, microphone transcripts are ignored unless they begin with “Hey Agatha.” This reduces accidental pickup but is not voice biometrics: a passer-by who says the wake phrase can still trigger Agatha. Live speech transcription currently uses the configured SpeechRecognition Google service, so captured audio is sent to that service for recognition.
 - **Files:** storage scans and code tools can access files the running user can read. macOS may separately deny protected folders; grant access only to the folders Agatha needs, or select an accessible folder.
 - **Network services:** web research, market data, cloud LLM providers, and social posting need network access. Provider credentials and OAuth consent are separate from macOS Automation permissions.
+
+## Safety Review and Tutoring
+
+- Ask Agatha to review a link, uploaded document/image/code file, or pasted text for suspicious indicators. Checks are read-only: local URL and scam heuristics, file signature comparison, SHA-256, and code-pattern warnings. If `clamscan` from ClamAV is installed, an uploaded file is also scanned locally.
+- These checks are triage, not a guarantee. A clean ClamAV result or no heuristic match does not prove a file or site safe. Links are not opened or reputation-checked, and files are not blocked, changed, executed, or quarantined.
+- Agatha can explain suspicious indicators and suggest safer fixes, but she cannot authenticate a certificate, issuer, image, or proof from appearance/text alone. Confirm documents directly with the issuing organization using contact details obtained independently.
+- Ask Agatha to teach, tutor, quiz, or walk through a subject for structured explanations, worked examples, and practice. Tutoring adapts within the conversation; it does not retrain the underlying language model.
+
+## Tutoring and Image Creation
+
+- Ask Agatha to teach, tutor, quiz, or walk through a subject for a structured explanation, examples, and practice. It can adapt within the current conversation, but this does not retrain the underlying language model.
+- Image creation requires a configured image provider. Include “3D” or “3D render” in the request for detailed three-dimensional render direction.
 
 ## Alarm Support
 

@@ -2,6 +2,12 @@ python-dotenv
 requests
 pywin32; sys_platform == "win32"
 
+# Optional local malware scanning used by tools_security.py.
+# This is a system executable, not a Python package; on macOS install with:
+#   brew install clamav
+# Configure freshclam.conf (remove its Example line), then run `freshclam`
+# to fetch/update signatures before scanning.
+
 # Optional — only needed if you plan to use these specific LLM providers.
 # Comment out any you don't use.
 openai

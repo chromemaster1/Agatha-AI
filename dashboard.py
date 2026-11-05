@@ -314,6 +314,25 @@ _HTML_PAGE = r"""<!DOCTYPE html>
   .entry.Agent { background:linear-gradient(140deg, #26352f, #1d2925); }
   .entry.System { background:var(--system); font-style:italic; color:var(--muted); font-size:13px; }
   .entry .meta { font-size:11px; color:var(--muted); margin-bottom:3px; }
+  .thinkingIndicator { display:flex; align-items:center; gap:16px; max-width:760px; min-height:112px;
+                       padding:8px 10px; color:#c5d8c8; }
+  .quantumCluster { width:92px; height:92px; flex:0 0 92px; overflow:visible;
+                    filter:drop-shadow(0 0 10px #63e5c355); }
+  .quantumNetwork { transform-origin:50% 50%; animation:quantumSpin 18s linear infinite; }
+  .quantumLinks { stroke:#8be8d5; stroke-width:1.35; stroke-linecap:round;
+                  animation:linkGlow 1.8s ease-in-out infinite alternate; }
+  .quantumDot { stroke:#d9fff1; stroke-width:1; animation:dotPulse 1.6s ease-in-out infinite alternate; }
+  .quantumDot:nth-of-type(3n) { animation-delay:-.7s; }
+  .quantumDot:nth-of-type(3n + 1) { animation-delay:-1.2s; }
+  .thinkingCopy { display:flex; flex-direction:column; gap:4px; }
+  .thinkingCopy strong { color:#e4f4e7; font-size:13px; font-weight:600; }
+  .thinkingCopy span { color:var(--muted); font-size:12px; }
+  @keyframes quantumSpin { to { transform:rotate(360deg); } }
+  @keyframes linkGlow { from { opacity:.28; } to { opacity:.9; } }
+  @keyframes dotPulse { from { opacity:.58; } to { opacity:1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .quantumNetwork, .quantumLinks, .quantumDot { animation:none; }
+  }
   #chatInputBar { border-top:1px solid var(--border); padding:14px max(20px, calc((100% - 920px) / 2));
                   display:flex; gap:10px; flex-shrink:0; align-items:center; background:#171e19e8; }
   #chatInput { flex:1; background:var(--panel2); border:1px solid var(--border); color:var(--text);
@@ -723,6 +742,32 @@ async function refreshChat() {
         '<div class="entry ' + e.speaker + '"><div class="meta">' + e.speaker + ' · ' + e.time + '</div>' +
         chatText(e.text) + '</div>'
       ).join('');
+    }
+    if (data.status.state === 'working') {
+      logEl.insertAdjacentHTML('beforeend', `<div class="thinkingIndicator" role="status" aria-live="polite">
+        <svg class="quantumCluster" viewBox="0 0 160 160" aria-hidden="true">
+          <g class="quantumNetwork">
+            <g class="quantumLinks" fill="none">
+              <path d="M80 24 118 36 138 68 126 106 95 132 57 127 28 98 31 59 58 34Z" />
+              <path d="M80 24 80 80 118 36M138 68 101 76 126 106M95 132 82 96 57 127M28 98 61 78 31 59M58 34 80 80 101 76 118 36M61 78 80 80 82 96 57 127M61 78 58 34M101 76 138 68M80 80 95 132" />
+            </g>
+            <circle class="quantumDot" cx="80" cy="24" r="4" fill="#d5ffb5" />
+            <circle class="quantumDot" cx="118" cy="36" r="3.5" fill="#83f0d4" />
+            <circle class="quantumDot" cx="138" cy="68" r="4" fill="#a8d7ff" />
+            <circle class="quantumDot" cx="126" cy="106" r="3.5" fill="#f2d89a" />
+            <circle class="quantumDot" cx="95" cy="132" r="4" fill="#d5ffb5" />
+            <circle class="quantumDot" cx="57" cy="127" r="3.5" fill="#83f0d4" />
+            <circle class="quantumDot" cx="28" cy="98" r="4" fill="#a8d7ff" />
+            <circle class="quantumDot" cx="31" cy="59" r="3.5" fill="#f2d89a" />
+            <circle class="quantumDot" cx="58" cy="34" r="3.5" fill="#83f0d4" />
+            <circle class="quantumDot" cx="80" cy="80" r="5" fill="#efffc4" />
+            <circle class="quantumDot" cx="101" cy="76" r="3.5" fill="#d5ffb5" />
+            <circle class="quantumDot" cx="82" cy="96" r="3.5" fill="#a8d7ff" />
+            <circle class="quantumDot" cx="61" cy="78" r="3.5" fill="#f2d89a" />
+          </g>
+        </svg>
+        <div class="thinkingCopy"><strong>Agatha is thinking</strong><span>Connecting the dots...</span></div>
+      </div>`);
     }
     logEl.scrollTop = shouldFollow ? logEl.scrollHeight : previousScrollTop;
   } catch (e) { /* ignore transient errors */ }

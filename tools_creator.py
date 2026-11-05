@@ -356,7 +356,15 @@ def generate_image(prompt: str, size: str = "1024x1024") -> str:
         return "Could not generate image: configure OPENAI_API_KEY to use OpenAI image generation."
     size = size if size in ("1024x1024", "1024x1536", "1536x1024") else "1024x1024"
     try:
-        image_data = image_generator(prompt, size)
+        generation_prompt = prompt
+        if re.search(r"\b(?:3d|three[- ]dimensional|render|cgi)\b", prompt, re.IGNORECASE):
+            generation_prompt += (
+                " Create a striking, professionally art-directed 3D render with clear silhouette, "
+                "convincing depth, physically based materials, detailed surface texture, cinematic "
+                "key and rim lighting, deliberate composition, and a refined color palette. Keep the "
+                "subject recognizable and avoid text, logos, and visual clutter."
+            )
+        image_data = image_generator(generation_prompt, size)
         if not image_data:
             raise RuntimeError("the image provider returned no image data")
         os.makedirs(OUTPUT_DIR, exist_ok=True)

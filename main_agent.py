@@ -25,6 +25,7 @@ from tools_notes import create_note
 from tools_reminders import schedule_reminder
 import tools_memory
 import tools_subagents
+import tools_security
 from tools_instance import acquire_instance_lock
 
 try:
@@ -85,6 +86,8 @@ try:
 except Exception as e:
     print(f"[Info] Creator toolkit unavailable ({e}).")
     tools_creator = None
+
+import tools_music
 
 try:
     import tools_ads
@@ -1602,6 +1605,61 @@ def _parse_voice_settings(user_input: str, text: str):
     return None
 
 
+def _parse_public_voice_mode(user_input: str, text: str):
+    if re.search(r"\b(?:enable|turn on|start)\b.*\bpublic\b.*\b(?:voice|listening)\b", text):
+        _PUBLIC_VOICE_MODE.set()
+        return ("Public voice focus is on. I will ignore speech unless it starts with 'Hey Agatha'. "
+                "This is wake-word filtering, not biometric speaker identification; anyone using the wake phrase may be heard.")
+    if re.search(r"\b(?:disable|turn off|stop)\b.*\bpublic\b.*\b(?:voice|listening)\b", text):
+        _PUBLIC_VOICE_MODE.clear()
+        return "Public voice focus is off. Voice input is back to normal listening."
+    return None
+
+
+def _parse_security_review(user_input: str, text: str, attachments=None):
+    risk_intent = re.search(
+        r"\b(?:scam|scams|phish(?:ing)?|malware|virus|compromised|fake|forged|authentic|authenticate|"
+        r"certificate|certification|proof|verify|verification|security|safe)\b", text)
+    inspect_target = re.search(
+        r"\b(?:scan|inspect|review|check)\b.{0,50}\b(?:link|site|file|document|image|code|certificate)\b", text)
+    if not risk_intent and not inspect_target:
+        return None
+
+    reports = []
+    urls = list(dict.fromkeys(_URL_RE.findall(user_input)))
+    urls.extend(item.get("url", "") for item in attachments or [] if item.get("url"))
+    if not urls:
+        domain = re.search(r"\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b", user_input, re.IGNORECASE)
+        if domain:
+            urls.append("https://" + domain.group(0))
+    for url in dict.fromkeys(urls):
+        reports.append(tools_security.review_safety(url=url))
+
+    for attachment in attachments or []:
+        path = attachment.get("path")
+        subject = user_input or attachment.get("name", "uploaded file")
+        if path:
+            reports.append(tools_security.review_safety(
+                file_path=path, content=attachment.get("text", ""), subject=subject))
+        elif attachment.get("text"):
+            reports.append(tools_security.review_safety(
+                content=attachment["text"], subject=subject))
+
+    if not reports:
+        path_match = re.search(r"(?:\"([^\"]+)\"|'([^']+)'|((?:~|/)[^\s]+))", user_input)
+        if path_match:
+            path = next(value for value in path_match.groups() if value)
+            reports.append(tools_security.review_safety(file_path=path, subject=user_input))
+        elif re.search(r"```|\b(?:eval|exec|os\.system|subprocess|pickle\.load|yaml\.load)\s*\b", user_input):
+            reports.append(tools_security.review_safety(content=user_input, subject="pasted code"))
+        elif len(user_input.strip()) > 80:
+            reports.append(tools_security.review_safety(content=user_input, subject=user_input))
+
+    if reports:
+        return "\n\n".join(reports)
+    return "Send the link, attach the file or document, or paste the text/code you want me to review."
+
+
 def _parse_email(user_input: str, text: str):
     if not fetch_recent_emails:
         return None
@@ -1820,11 +1878,45 @@ _CLIP_RE = re.compile(
     r"(https?://\S+|\S+\.(?:mp4|mov|mkv|webm|avi|m4v))", re.IGNORECASE)
 _MUSIC_RE = re.compile(r"\b(?:with|using|sync(?:ed|ing)?\s+(?:to|with)|to the beat of)\s+(?:the\s+)?(?:song\s+|music\s+|track\s+)?"
                        r"(\S+\.(?:mp3|wav|m4a|aac|flac|ogg))", re.IGNORECASE)
+_AUDIO_FILE_RE = re.compile(
+    r'''(?:"([^"]+\.(?:aac|aif|aiff|flac|m4a|mp3|ogg|wav))"|'''
+    r''''([^']+\.(?:aac|aif|aiff|flac|m4a|mp3|ogg|wav))'|'''
+    r'''((?:~|/)[^\n]*?\.(?:aac|aif|aiff|flac|m4a|mp3|ogg|wav)(?=\s|$)))''', re.IGNORECASE)
 _URL_RE = re.compile(r"https?://[^\s)\]<>\"']+", re.IGNORECASE)
 _CLIP_ACTION_RE = re.compile(r"\b(?:make|cut|creat(?:e|ing)|generat(?:e|ing)|find|get)\b.*\b(?:clips?|shorts|reels|highlights?|montage)\b", re.IGNORECASE)
 _SCHEDULE_RE = re.compile(
     r"\bschedule\s+(?:a\s+|this\s+)?(?:post\s+)?(?:to|on|for)\s+(bluesky|x|twitter|instagram|youtube|tiktok)\s+"
     r"(?:at|for|on)\s+(.+?)(?::\s|\s-\s|\s+saying\s+|\s+that says\s+)(.+)$", re.IGNORECASE)
+
+
+def _parse_music(user_input: str, text: str):
+    command = re.match(r"^\s*(?:hey\s+agatha[, ]*)?(?:please\s+)?(play|pause|resume|stop|skip|next|previous|open)\b",
+                       user_input, re.IGNORECASE)
+    if not command:
+        return None
+
+    action = command.group(1).lower()
+    player = "spotify" if "spotify" in text else "music"
+    audio_file = _AUDIO_FILE_RE.search(user_input)
+    if audio_file and action in ("play", "open"):
+        path = next(value for value in audio_file.groups() if value)
+        return tools_music.play_music(file_path=path, player=player)
+
+    if action in ("pause", "stop", "skip", "next", "previous"):
+        if not re.search(r"\b(?:music|song|track|playback|spotify|apple music)\b", text):
+            return None
+        normalized = "next" if action == "skip" else action
+        return tools_music.control_music(normalized, player=player)
+
+    if action in ("play", "resume", "open"):
+        if action == "resume" or re.fullmatch(r"\s*(?:play|open)\s+(?:music|spotify|apple music)?\s*[.!]?\s*", user_input, re.IGNORECASE):
+            return tools_music.play_music(player=player)
+        query = user_input[command.end():]
+        query = re.sub(r"\s+(?:in|on)\s+(?:apple\s+)?(?:music|spotify)\s*[.!?]*$", "", query, flags=re.IGNORECASE)
+        query = re.sub(r"^\s*(?:(?:the\s+)?(?:song|track|music)\s+)?", "", query, flags=re.IGNORECASE)
+        query = query.strip(" \t.,!?\"'")
+        return tools_music.play_music(query=query, player=player)
+    return None
 
 
 def _parse_creator(user_input: str, text: str, conversation=None, attachments=None):
@@ -1900,11 +1992,19 @@ def _parse_creator(user_input: str, text: str, conversation=None, attachments=No
                 music_path=music_path, music_url=music_url,
                 mode="montage" if "montage" in request_lower else "clips")
 
-    image_request = re.search(r"\b(?:generate|create|make)\s+(?:an?\s+)?(?:image|picture|artwork|illustration)\b"
+    image_request = re.search(r"\b(?:generate|create|make|design|render)\s+(?:me\s+)?(?:an?\s+)?"
+                              r"(?:(?:stunning|beautiful|cinematic|high[- ]quality|3d|three[- ]dimensional)\s+)*"
+                              r"(?:image|picture|artwork|illustration|render)\b"
                               r"(?:\s+(?:of|showing|for))?\s+(.+)",
                               user_input, re.IGNORECASE)
     if image_request:
-        return tools_creator.generate_image(image_request.group(1).strip())
+        description = image_request.group(1).strip()
+        prefix = user_input[:image_request.start(1)]
+        if re.search(r"\b(?:3d|three[- ]dimensional)\b", prefix, re.IGNORECASE):
+            description = f"3D render of {description}"
+        elif re.search(r"\b(?:stunning|beautiful|cinematic|high[- ]quality)\b", prefix, re.IGNORECASE):
+            description = f"stunning visual of {description}"
+        return tools_creator.generate_image(description)
 
     is_clip_request = bool(_CLIP_ACTION_RE.search(user_input))
     if is_clip_request and not current_urls:
@@ -2149,9 +2249,13 @@ CAPABILITIES_TEXT = (
     "- Social posting: stage and, with your confirmation, post to Bluesky, X, YouTube, Instagram, or TikTok\n"
     "- Creator tools: cut short clips from a video link (optionally synced to a song), write captions and hashtags, "
     "schedule posts, plan ad campaigns, and draft billboard, radio, newspaper, and PR briefs\n"
+    "- Music: play songs from the macOS Music library, play local audio files, and control Music or Spotify playback\n"
+    "- Learning: get explanations, lessons, practice, and tutoring across the sciences, humanities, arts, and other fields\n"
+    "- Image creation: generate visual concepts; ask for a 3D render for a polished three-dimensional look\n"
+    "- Safety review: flag suspicious links, file mismatches, risky code and scam language; optional local ClamAV scan\n"
     "- Personality: I learn what you like over time, and I'll tell you what I think when you ask\n"
     "- Memory: remember notes, and track named projects with style notes and preferences\n"
-    "- Voice: change my voice's gender or tone, list or test the microphone\n"
+    "- Voice: change my voice's gender or tone, list or test the microphone, or enable public voice focus\n"
     "Just ask naturally — say 'list voices' or 'test microphone' for voice-specific options."
 )
 
@@ -2191,7 +2295,7 @@ def parse_and_execute_simple_command(user_input: str, conversation=None, attachm
     Ollama unavailable."""
     text = user_input.lower()
 
-    for handler in (_parse_greeting, _parse_identity, _parse_capabilities, _parse_help_topics, _parse_profile, _parse_todo, _parse_creator, _parse_crew,
+    for handler in (_parse_greeting, _parse_identity, _parse_capabilities, _parse_help_topics, _parse_profile, _parse_todo, _parse_music, _parse_public_voice_mode, _parse_security_review, _parse_creator, _parse_crew,
                      _parse_social, _parse_meeting,
                      _parse_reminder, _parse_note, _parse_storage, _parse_voice_settings,
                      _parse_email, _parse_texts, _parse_code_assist, _parse_research, _parse_market,
@@ -2201,6 +2305,8 @@ def parse_and_execute_simple_command(user_input: str, conversation=None, attachm
                 result = handler(user_input, text, conversation)
             elif handler is _parse_creator:
                 result = handler(user_input, text, conversation, attachments)
+            elif handler is _parse_security_review:
+                result = handler(user_input, text, attachments)
             else:
                 result = handler(user_input, text)
         except Exception as e:
@@ -2618,6 +2724,14 @@ if tools_creator:
     AVAILABLE_FUNCTIONS.update(tools_creator.FUNCTIONS)
     _TOOL_INTENTS.update(tools_creator.TOOL_INTENTS)
 
+tools.extend(tools_music.TOOL_SCHEMAS)
+AVAILABLE_FUNCTIONS.update(tools_music.FUNCTIONS)
+_TOOL_INTENTS.update(tools_music.TOOL_INTENTS)
+
+tools.extend(tools_security.TOOL_SCHEMAS)
+AVAILABLE_FUNCTIONS.update(tools_security.FUNCTIONS)
+_TOOL_INTENTS.update(tools_security.TOOL_INTENTS)
+
 if tools_ads:
     tools.extend(tools_ads.TOOL_SCHEMAS)
     AVAILABLE_FUNCTIONS.update(tools_ads.FUNCTIONS)
@@ -2738,6 +2852,9 @@ _voice_paused = threading.Event()   # set = voice thread pauses (text-only mode)
 _standby = threading.Event()        # set = voice waits for a wake phrase
 _busy = threading.Event()           # set = a command is actively being processed
 _stop_event = threading.Event()
+_PUBLIC_VOICE_MODE = threading.Event()
+if os.getenv("AGATHA_PUBLIC_VOICE_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+    _PUBLIC_VOICE_MODE.set()
 
 # Commands that visibly take a moment (file scanning, network calls, LLM
 # synthesis) get an immediate spoken acknowledgment before the work starts,
@@ -2792,6 +2909,23 @@ def _wake_greeting() -> str:
     return "Hello. How can I assist you today?"
 
 
+def _voice_input_from_transcript(heard: str):
+    """Return a queued voice input, filtering unaddressed speech in focus modes."""
+    standby = _standby.is_set()
+    if standby or _PUBLIC_VOICE_MODE.is_set():
+        woke, request = _strip_wake_word(heard)
+        if not woke:
+            return None
+        if standby:
+            _standby.clear()
+        if _is_likely_self_echo(heard):
+            return None
+        return ("wake" if standby or not request else "voice", request)
+    if _is_likely_self_echo(heard):
+        return None
+    return "voice", heard
+
+
 def _voice_listener_loop():
     consecutive_empty = 0
     while not _stop_event.is_set():
@@ -2818,19 +2952,15 @@ def _voice_listener_loop():
 
         if heard:
             consecutive_empty = 0
-            if _standby.is_set():
-                woke, request = _strip_wake_word(heard)
-                if not woke:
-                    continue
-                _standby.clear()
-                _busy.set()
-                _input_queue.put(("wake", request))
-                continue
-            if _is_likely_self_echo(heard):
-                print(f"[Info] Ignored likely self-echo (sounded like my own last reply): '{heard}'")
+            voice_input = _voice_input_from_transcript(heard)
+            if voice_input is None:
+                if _PUBLIC_VOICE_MODE.is_set() and not _strip_wake_word(heard)[0]:
+                    print("[Info] Ignored unaddressed speech in public voice focus mode.")
+                elif _is_likely_self_echo(heard):
+                    print(f"[Info] Ignored likely self-echo (sounded like my own last reply): '{heard}'")
                 continue
             _busy.set()
-            _input_queue.put(("voice", heard))
+            _input_queue.put(voice_input)
         else:
             consecutive_empty += 1
             if consecutive_empty == 3 or (consecutive_empty > 0 and consecutive_empty % 10 == 0):
@@ -2935,6 +3065,17 @@ CONTEXT_BUDGET = int(os.getenv("AGATHA_CONTEXT_BUDGET", "350" if _SMALL_MODEL_MO
 
 
 def _compose_system_prompt(base: str, user_input: str, has_tools: bool) -> str:
+    if re.search(r"\b(?:teach|tutor|learn|study|lesson|quiz|practice|walk me through|help me understand|train me)\b",
+                 user_input or "", re.IGNORECASE):
+        base += (
+            "\n\nTeaching mode: tutor adaptively across creativity, sociology, mathematics, English, chemistry, "
+            "physics, biology, engineering, nanotechnology, religion, spirituality, poetry, literature, music, "
+            "art, and other fields. Establish the learner's level only when needed; explain concepts in a clear "
+            "sequence, use worked examples and units where relevant, then offer a short practice question when "
+            "useful. Correct misunderstandings kindly and distinguish evidence from interpretation. Treat faith "
+            "traditions respectfully and neutrally. Adapt within this conversation, but do not claim to retrain "
+            "the underlying model or permanently learn new subject facts."
+        )
     if not (tools_persona and tools_profile):
         return base
     try:
@@ -2958,7 +3099,10 @@ def run_agent_loop():
         f"if asked your name, always say {AGENT_NAME}, never any other name. "
         f"Keep spoken answers clear, fluent, warm, adaptable, and natural. Match detail to the task: "
         f"answer simple questions directly, explain complex topics in well-ordered steps, and use "
-        f"examples when they genuinely clarify. Track the user's intent across turns, notice corrections, "
+        f"examples when they genuinely clarify. Use correct, natural punctuation and paragraph breaks; "
+        f"write sentences so punctuation creates clear pauses when read aloud. Keep lists and symbols "
+        f"easy to follow in speech, and explain mathematical notation in words when that helps. "
+        f"Track the user's intent across turns, notice corrections, "
         f"and use relevant prior context without making the user repeat themselves. Ask one focused "
         f"follow-up only when essential information is missing. "
         f"Do not mechanically repeat their request, over-explain simple answers, or add generic "
