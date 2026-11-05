@@ -2,7 +2,10 @@ import json
 import os
 from datetime import datetime
 
-SUBAGENTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subagents.json")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.getenv("AGATHA_DATA_DIR")
+SUBAGENTS_FILE = os.getenv("AGATHA_SUBAGENTS_FILE", os.path.join(
+    _DATA_DIR, "subagents.json") if _DATA_DIR else os.path.join(_BASE_DIR, "subagents.json"))
 MAX_HISTORY_PER_AGENT = 20
 
 

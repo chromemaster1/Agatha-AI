@@ -646,7 +646,7 @@ def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
             system_prompt, anthropic_msgs = _messages_to_anthropic(messages)
             kwargs = dict(
                 model=_provider_model("anthropic", _ANTHROPIC_MODEL.get(tier, _ANTHROPIC_MODEL["main"])),
-                max_tokens=1024 if tier == "main" else 700,
+                max_tokens=(2048 if _is_long_form_request(messages) else 1024) if tier == "main" else 700,
                 system=system_prompt,
                 messages=anthropic_msgs,
             )
@@ -668,7 +668,8 @@ def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
                     ))
 
             msg = SimpleNamespace(content="".join(text_parts), tool_calls=tool_calls)
-            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+            finish_reason = "length" if getattr(response, "stop_reason", "") == "max_tokens" else "stop"
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason=finish_reason)])
         except Exception as e:
             print(f"[Warning] Claude API execution failed: {e}")
 
@@ -713,7 +714,7 @@ def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
                         "stream": False,
                         "options": {
                             "temperature": 0.4,
-                            "num_predict": _ollama_output_budget(tools),
+                            "num_predict": _ollama_output_budget(tools, messages),
                         },
                     }
                     if tools:
@@ -739,7 +740,8 @@ def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
                             print(f"[Info] Used Ollama fallback model '{model_name}' (primary '{OLLAMA_MODEL}' was unavailable/failed).")
 
                         msg = SimpleNamespace(content=text, tool_calls=tool_calls)
-                        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+                        finish_reason = "length" if data.get("done_reason") == "length" else "stop"
+                        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason=finish_reason)])
                     else:
                         print(f"[Warning] Ollama model '{model_name}' returned status {res.status_code}: {res.text[:200]} — trying next fallback.")
                 except Exception as e:
@@ -814,6 +816,74 @@ def _clean_llm_text(response) -> str:
     show/speak/save. Use this everywhere a response's content is displayed
     or written to a file, instead of reading .content directly."""
     return _strip_marker(response.choices[0].message.content)
+
+
+_LONG_FORM_REQUEST_RE = re.compile(
+    r"\b(?:summari[sz]|report|research|comprehensive|extensive|in detail|thorough|pitfalls?|risks?|"
+    r"due diligence|investor|investment|likelihood|rating|compare|pros and cons|evaluate|analysis|"
+    r"continue|remaining sections)\b",
+    re.IGNORECASE,
+)
+
+
+def _last_user_message_text(messages) -> str:
+    for message in reversed(messages or []):
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role != "user":
+            continue
+        content = message.get("content", "") if isinstance(message, dict) else getattr(message, "content", "")
+        if isinstance(content, list):
+            return " ".join(block.get("text", "") for block in content if isinstance(block, dict))
+        return str(content or "")
+    return ""
+
+
+def _is_long_form_request(messages) -> bool:
+    return bool(_LONG_FORM_REQUEST_RE.search(_last_user_message_text(messages)))
+
+
+def _response_was_truncated(response) -> bool:
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return False
+    reason = getattr(choices[0], "finish_reason", None)
+    return reason in ("length", "max_tokens")
+
+
+def _complete_truncated_response(messages, response, tier="main"):
+    """Continue explicit long-form answers when a provider reports an output-limit stop."""
+    if not _is_long_form_request(messages) or not _response_was_truncated(response):
+        return response
+
+    content = _clean_llm_text(response)
+    for _ in range(2):
+        continuation_messages = [
+            *messages,
+            {"role": "assistant", "content": content},
+            {"role": "user", "content": (
+                "Continue the response from where it stopped. Do not repeat completed sections. "
+                "Finish all remaining requested sections and end with a complete sentence."
+            )},
+        ]
+        continuation = get_llm_response(continuation_messages, tools=[], tier=tier)
+        if _llm_unavailable(continuation) or getattr(continuation.choices[0].message, "tool_calls", None):
+            break
+        next_text = _clean_llm_text(continuation).strip()
+        if not next_text:
+            break
+        content = content.rstrip() + "\n\n" + next_text
+        response = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=content, tool_calls=[]),
+            finish_reason=getattr(continuation.choices[0], "finish_reason", None),
+        )])
+        if not _response_was_truncated(response):
+            return response
+
+    if _response_was_truncated(response):
+        content += "\n\nThis report may still be incomplete because the language model reached its output limit."
+        response = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=content, tool_calls=[]), finish_reason="stop")])
+    return response
 
 
 # --- New capability wrappers: email/text summarizing, code assist, research ---
@@ -922,17 +992,25 @@ def research_topic(topic: str, max_results: int = 6) -> str:
 
     combined = "\n\n".join(f"{r['title']}\n{r['url']}\n{r['snippet']}" for r in results)
     prompt = (
-        f"Based on these search results, write a concise, well-organized research summary on "
-        f"'{topic}'. Note any disagreement between sources, and don't invent facts not present "
-        f"here:\n\n{combined}"
+        f"Prepare a complete, well-organized research report on '{topic}' using only these search results. "
+        "Cover the key findings, relevant context, important evidence and figures, points of agreement or "
+        "disagreement, practical implications, and material limitations or unanswered questions. Cite each "
+        "substantive claim with the exact source URL and title supplied below; do not invent publication dates, "
+        "facts, quotations, or citations. Distinguish source claims from your synthesis. Address every part of "
+        "the topic and finish with a concise conclusion.\n\n"
+        f"Search results:\n{combined}"
     )
     response = get_llm_response([
-        {"role": "system", "content": "You synthesize web search results into a clear, accurate research summary, sticking to what the sources actually say."},
+        {"role": "system", "content": "You write accurate, complete research reports. Use only supplied sources, cite claims with their exact URLs, disclose uncertainty, and never fabricate evidence."},
         {"role": "user", "content": prompt},
     ])
     if _llm_unavailable(response):
         # Don't save a fake "research note" containing just the fallback text.
         return f"Can't synthesize research on '{topic}' right now — {_clean_llm_text(response)}"
+    response = _complete_truncated_response([
+        {"role": "system", "content": "You write accurate, complete research reports. Use only supplied sources, cite claims with their exact URLs, disclose uncertainty, and never fabricate evidence."},
+        {"role": "user", "content": prompt},
+    ], response)
     summary = _clean_llm_text(response)
 
     if save_research_note:
@@ -1092,12 +1170,14 @@ def cancel_social_post() -> str:
 # decoupled from this file; they only get these callables via configure(). ---
 def _plain_llm(system: str, prompt: str, tier: str = "main"):
     """One-shot LLM call with its own neutral prompt (no persona). None if no LLM is reachable."""
-    response = get_llm_response([
+    messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": prompt},
-    ], tier=tier)
+    ]
+    response = get_llm_response(messages, tier=tier)
     if _llm_unavailable(response):
         return None
+    response = _complete_truncated_response(messages, response, tier=tier)
     return _clean_llm_text(response)
 
 
@@ -2179,7 +2259,7 @@ _DOCUMENT_SUMMARY_RE = re.compile(
 
 
 def _summarize_uploaded_documents(user_input: str, attachments: list[dict]):
-    """Summarize extracted document text in bounded passes for book-length uploads."""
+    """Analyze extracted documents in bounded passes and answer every requested part."""
     if not _DOCUMENT_SUMMARY_RE.search(user_input or ""):
         return None
     documents = [item for item in attachments or [] if item.get("text")]
@@ -2192,10 +2272,22 @@ def _summarize_uploaded_documents(user_input: str, attachments: list[dict]):
     )
     chunks = [source[index:index + 16000] for index in range(0, len(source), 16000)]
     chunk_summaries = []
-    chunk_system = (
-        "Summarize this passage faithfully. Preserve its central claims, important evidence, "
-        "definitions, names, and conclusions. Do not invent details. Return concise structured notes."
-    )
+    investment_review = bool(re.search(
+        r"\b(?:investor|invest(?:ment|ing)?|startup|pitfalls?|due diligence|likelihood|rating)\b",
+        user_input, re.IGNORECASE))
+    if investment_review:
+        chunk_system = (
+            "Extract evidence from this document passage for a prospective startup investor. Preserve exact "
+            "figures, dates, named products, page markers, and claims. Organize notes under problem/customer, "
+            "product, market evidence, competition/differentiation, traction, revenue model, costs/unit economics, "
+            "team/execution, risks, and unanswered questions. Mark which items are stated, inferred, or absent. "
+            "Do not verify claims from outside this passage or invent missing evidence."
+        )
+    else:
+        chunk_system = (
+            "Summarize this passage faithfully. Preserve its central claims, important evidence, figures, "
+            "definitions, names, and conclusions. Do not invent details. Return concise structured notes."
+        )
     for index, chunk in enumerate(chunks, 1):
         if dashboard:
             dashboard.set_step("summarizing", f"Reading document section {index} of {len(chunks)}")
@@ -2218,11 +2310,28 @@ def _summarize_uploaded_documents(user_input: str, attachments: list[dict]):
 
     if dashboard:
         dashboard.set_step("summarizing", "Writing the complete summary")
-    final_system = (
-        "You summarize books and documents accurately. Use only the supplied section notes. "
-        "Organize the answer with a short overview, main ideas, notable details, and a concise conclusion. "
-        "Respect the user's requested focus. Do not invent page references or facts."
-    )
+    if investment_review:
+        final_system = (
+            "Write a complete, decision-useful startup investment review based only on the supplied document notes. "
+            "Answer every part of the user's request. Use headings for executive summary, product/problem, market, "
+            "evidence and traction, business model, potential pitfalls, missing diligence, and conclusion. Separate "
+            "document claims from your analysis; cite page markers when available. Clearly say when information is "
+            "absent and never invent market numbers, competitors, traction, financials, credentials, or facts. "
+            "If asked for a 1-100 investment likelihood, call it an evidence-based investability score, not a literal "
+            "probability or promise of returns. Give a brief weighted rubric across market/problem fit (15), "
+            "product/differentiation (15), validation/traction (20), business model/economics (20), team/execution "
+            "evidence (15), and risk/regulatory readiness (15). Missing evidence earns a conservative score and must "
+            "be listed as an unknown. Show the factor scores, total, rationale, and key diligence questions. "
+            "Do not assign a high score without strong document evidence. Finish all requested sections and end with "
+            "a complete sentence."
+        )
+    else:
+        final_system = (
+            "You summarize documents accurately. Use only the supplied section notes. Answer every part of the user's "
+            "request, not just the request's first verb. Organize the answer with a short overview, key evidence, "
+            "requested analysis, limitations or missing details, and a conclusion. Do not invent facts or page "
+            "references. Finish all requested sections and end with a complete sentence."
+        )
     focus = user_input.strip() or "Give me a useful summary."
     final_notes = "\n\n".join(chunk_summaries)
     final = _plain_llm(final_system, f"Request: {focus}\n\nDocument notes:\n{final_notes}", tier="main")
@@ -2794,7 +2903,9 @@ def _select_tools_for_request(user_input: str, available_tools=None):
     ]
 
 
-def _ollama_output_budget(tools):
+def _ollama_output_budget(tools, messages=None):
+    if messages is not None and _is_long_form_request(messages):
+        return 1200 if tools else 1800
     if tools is None:
         return 1024
     return 320 if tools else 120
@@ -3110,6 +3221,11 @@ def run_agent_loop():
         f"For factual answers, distinguish known facts from inference, state uncertainty plainly, and "
         f"never fabricate sources, file contents, actions, or verification. If a file was attached, use its "
         f"extracted contents; if contents are unavailable, say so instead of guessing. "
+        f"Answer every part of a multi-part request. For research, document reviews, and other requested reports, "
+        f"use enough detail to complete the requested scope, support conclusions with available evidence, label "
+        f"unknowns, and define the meaning and basis of any rating. Never invent a score or present it as a "
+        f"probability unless the evidence and method support that interpretation. Do not stop mid-section; if a "
+        f"provider limit prevents completion, say explicitly what remains incomplete. "
         f"For each request, silently identify the requested outcome, required details, relevant tools, "
         f"and any dependencies before acting. Ask a concise clarifying question when essential details "
         f"are missing or ambiguous. For actions, call the appropriate tool and inspect its result; "
@@ -3362,6 +3478,9 @@ def run_agent_loop():
                         break
                 else:
                     tool_limit_reached = True
+
+                if not (getattr(response.choices[0].message, "tool_calls", None) or []):
+                    response = _complete_truncated_response(messages, response, tier="main")
 
                 if tool_failures:
                     final_reply = "I couldn't complete every requested action. Tool results:\n" + "\n".join(tool_outputs_texts)

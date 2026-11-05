@@ -1,7 +1,10 @@
 import json
 import os
 
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_settings.json")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.getenv("AGATHA_DATA_DIR")
+SETTINGS_FILE = os.getenv("AGATHA_SETTINGS_FILE", os.path.join(
+    _DATA_DIR, "agent_settings.json") if _DATA_DIR else os.path.join(_BASE_DIR, "agent_settings.json"))
 
 # Keys the Settings page knows how to manage. Grouped for display purposes.
 SETTING_GROUPS = {

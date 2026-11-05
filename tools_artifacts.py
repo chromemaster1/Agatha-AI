@@ -3,7 +3,10 @@ import os
 import uuid
 from datetime import datetime
 
-ARTIFACTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts.json")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.getenv("AGATHA_DATA_DIR")
+ARTIFACTS_FILE = os.getenv("AGATHA_ARTIFACTS_FILE", os.path.join(
+    _DATA_DIR, "artifacts.json") if _DATA_DIR else os.path.join(_BASE_DIR, "artifacts.json"))
 MAX_ARTIFACTS = 300
 
 

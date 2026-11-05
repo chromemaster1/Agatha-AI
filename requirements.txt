@@ -42,3 +42,7 @@ scipy<1.15
 requests-oauthlib          # X/Twitter (OAuth1.0a)
 google-api-python-client   # YouTube upload
 google-auth-oauthlib       # YouTube OAuth2 consent flow
+
+# Video URL ingestion used by the creator tools. FFmpeg is installed by the
+# Render Docker image (and should be installed separately on local machines).
+yt-dlp

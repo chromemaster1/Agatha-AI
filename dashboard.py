@@ -44,8 +44,13 @@ except Exception:
   MAX_REQUEST_BYTES = 110 * 1024 * 1024
   parse_multipart_form = None
 
-DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8765"))
-HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat_history.json")
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", os.getenv("PORT", "8765")))
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+HOSTED_MODE = os.getenv("AGATHA_HOSTED_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+_DATA_DIR = os.getenv("AGATHA_DATA_DIR")
+HISTORY_FILE = os.getenv("AGATHA_HISTORY_FILE", os.path.join(
+  _DATA_DIR, "chat_history.json") if _DATA_DIR else
+  os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat_history.json"))
 MAX_HISTORY_SESSIONS = 50
 
 _agent_name = "Agent"
@@ -528,6 +533,7 @@ _HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 
   <div id="chatView" class="view active">
+    <div id="hostedNotice" hidden>Hosted workspace: this server cannot access your device microphone, local apps, or local folders.</div>
     <div id="chatLog"></div>
     <div id="attachmentList" aria-live="polite"></div>
     <div id="chatInputBar">
@@ -578,6 +584,7 @@ let currentView = 'chat';
 let selectedHistoryId = '';
 let selectedFiles = [];
 let dashboardAuthenticated = false;
+let hostedMode = false;
 let settingsInitialized = false;
 let settingsStack = ['root'];
 
@@ -599,14 +606,15 @@ function renderAuthMode() {
   document.getElementById('authDescription').textContent = registering
     ? (accountConfigured ? 'Create a local profile for this device.'
       : 'Create your local profile and choose the name Agatha should use for you.')
-    : (accountConfigured ? 'Use your username or email and password to continue to your local workspace.'
+    : (accountConfigured ? (hostedMode ? 'Sign in to your hosted Agatha workspace.'
+      : 'Use your username or email and password to continue to your local workspace.')
       : 'There is no local profile yet. Choose Register to create one.');
   document.getElementById('signupNameField').hidden = !registering;
   document.getElementById('authName').required = registering;
   document.getElementById('authPassword').autocomplete = registering ? 'new-password' : 'current-password';
   document.getElementById('authPassword').minLength = registering ? 10 : 1;
   document.getElementById('authSubmit').textContent = registering ? 'Register' : 'Sign in';
-  document.getElementById('authModeToggle').hidden = false;
+  document.getElementById('authModeToggle').hidden = hostedMode;
   document.getElementById('authModeToggle').textContent = registering ? 'I already have an account' : 'Create an account';
 }
 
@@ -660,6 +668,9 @@ async function initializeDashboard() {
   try {
     const response = await fetch('/api/session');
     const session = await response.json();
+    hostedMode = !!session.hosted;
+    document.getElementById('hostedNotice').hidden = !hostedMode;
+    document.querySelector('.authMark').textContent = hostedMode ? 'Agatha · Hosted workspace' : 'Agatha · Local account';
     if (session.authenticated) {
       dashboardAuthenticated = true;
       setAccountName(session.name);
@@ -1144,8 +1155,6 @@ class _Handler(BaseHTTPRequestHandler):
       authenticated = bool(tools_auth and tools_auth.is_authenticated(self._session_token()))
       if authenticated:
         authenticated_event.set()
-      else:
-        authenticated_event.clear()
       return authenticated
 
     def _origin_is_local(self):
@@ -1185,13 +1194,16 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(200, _HTML_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif self.path == "/healthz":
+            self._send_json(200, {"status": "ok"})
         elif self.path == "/api/session":
             authenticated = self._is_authenticated()
             if authenticated:
               authenticated_event.set()
             self._send_json(200, {
                 "configured": bool(tools_auth and tools_auth.account_exists()),
-              "authenticated": authenticated,
+                "authenticated": authenticated,
+                "hosted": HOSTED_MODE,
                 "name": tools_auth.account_name() if tools_auth else "",
                 "identifier": tools_auth.account_identifier() if tools_auth else "",
             })
@@ -1236,6 +1248,9 @@ class _Handler(BaseHTTPRequestHandler):
     # --- POST ---
     def do_POST(self):
         auth_routes = {"/api/auth/signup", "/api/auth/login", "/api/auth/logout"}
+        if HOSTED_MODE and not self.headers.get("Origin"):
+            self._send_json(403, {"error": "A same-origin browser request is required."})
+            return
         if not self._origin_is_local():
             self._send_json(403, {"error": "Cross-origin requests are not allowed."})
             return
@@ -1243,6 +1258,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(401, {"error": "Sign in to access the local dashboard."})
             return
         if self.path in ("/api/auth/signup", "/api/auth/login"):
+            if self.path.endswith("signup") and HOSTED_MODE:
+                self._send_json(403, {"ok": False, "error": "Hosted owner accounts are provisioned by the service operator."})
+                return
             if not tools_auth:
                 self._send_json(503, {"error": "Local account support is unavailable."})
                 return
@@ -1257,8 +1275,10 @@ class _Handler(BaseHTTPRequestHandler):
                     token, account = tools_auth.login(body.get("identifier", ""), body.get("password", ""))
                 authenticated_event.set()
                 cookie = f"agatha_session={token}; Path=/; HttpOnly; SameSite=Strict"
+                if HOSTED_MODE:
+                    cookie += "; Secure"
                 if body.get("remember", True):
-                  cookie += f"; Max-Age={tools_auth.SESSION_TTL_SECONDS}"
+                    cookie += f"; Max-Age={tools_auth.SESSION_TTL_SECONDS}"
                 self._send_json(200, {"ok": True, "account": account}, {"Set-Cookie": cookie})
             except tools_auth.AuthenticationError as error:
                 self._send_json(400, {"ok": False, "error": str(error)})
@@ -1296,6 +1316,8 @@ class _Handler(BaseHTTPRequestHandler):
                 tools_auth.logout(self._session_token())
             authenticated_event.clear()
             cookie = "agatha_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+            if HOSTED_MODE:
+              cookie += "; Secure"
             self._send_json(200, {"ok": True}, {"Set-Cookie": cookie})
         elif self.path == "/api/send":
             content_type = self.headers.get("Content-Type", "")
@@ -1343,7 +1365,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, b"Not found", "text/plain")
 
 
-def start_dashboard(port: int = DASHBOARD_PORT):
+def start_dashboard(port: int = DASHBOARD_PORT, host: str = DASHBOARD_HOST):
     """Start the dashboard HTTP server in a background daemon thread.
     Returns False on a port conflict so the agent can refuse duplicate startup."""
     global _server_thread
@@ -1351,14 +1373,15 @@ def start_dashboard(port: int = DASHBOARD_PORT):
         return True
 
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+        server = ThreadingHTTPServer((host, port), _Handler)
     except OSError as e:
         print(f"[Warning] Dashboard could not bind to port {port} ({e}). "
               "Stop the other instance or set DASHBOARD_PORT in .env.")
         return False
 
     def _run():
-        print(f"[Info] Dashboard available at: http://localhost:{port}")
+        display_host = "localhost" if host == "127.0.0.1" else host
+        print(f"[Info] Dashboard listening on {display_host}:{port}")
         try:
             server.serve_forever()
         except Exception as e:

@@ -9,7 +9,9 @@ import zipfile
 from email import policy
 from email.parser import BytesParser
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agatha_data", "uploads")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.getenv("AGATHA_DATA_DIR", os.path.join(_BASE_DIR, "agatha_data"))
+UPLOAD_DIR = os.getenv("AGATHA_UPLOAD_DIR", os.path.join(_DATA_DIR, "uploads"))
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_REQUEST_BYTES = 110 * 1024 * 1024
 TEXT_EXTENSIONS = {

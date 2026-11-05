@@ -6,7 +6,10 @@ try:
 except Exception:
     sync_todos_to_notes = None
 
-TODO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "todo_list.json")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.getenv("AGATHA_DATA_DIR")
+TODO_FILE = os.getenv("AGATHA_TODO_FILE", os.path.join(
+    _DATA_DIR, "todo_list.json") if _DATA_DIR else os.path.join(_BASE_DIR, "todo_list.json"))
 
 
 def get_todos():

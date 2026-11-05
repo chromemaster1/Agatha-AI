@@ -1,12 +1,15 @@
 {
   "name": "Creator",
-  "interaction_count": 92,
+  "interaction_count": 97,
   "first_seen": 1792658800.701029,
-  "last_seen": 1793868638.720416,
+  "last_seen": 1793885510.016382,
   "last_extract_ts": 1792712585.667286,
   "facts": [],
   "usage_hours": {
     "1": 2,
-    "9": 4
+    "9": 4,
+    "12": 1,
+    "13": 2,
+    "14": 2
   }
 }

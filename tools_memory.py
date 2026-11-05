@@ -4,7 +4,10 @@ import os
 import threading
 from datetime import datetime
 
-MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_memory.json")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.getenv("AGATHA_DATA_DIR")
+MEMORY_FILE = os.getenv("AGATHA_MEMORY_FILE", os.path.join(
+    _DATA_DIR, "agent_memory.json") if _DATA_DIR else os.path.join(_BASE_DIR, "agent_memory.json"))
 MAX_LOG_ENTRIES = 200  # keep the file bounded — old entries roll off automatically
 
 _PROJECT_CATEGORY_KEYS = {"style": "style_notes", "preference": "preferences", "note": "notes"}

@@ -55,7 +55,21 @@ See [MACOS_INTEGRATIONS.md](MACOS_INTEGRATIONS.md) for macOS privacy setup. Andr
 
 ## Hosting and Privacy
 
-Cloud hosting can run the model/tool orchestration, but cannot control Calendar, Notes, Reminders, microphone, files, or Messages on a user's separate device. A hosted product needs a separately installed local companion or native apps with platform-specific permission declarations and OAuth/consent flows. Do not expose this local dashboard as a public live service.
+### Render Deployment
+
+This repository includes a Render Blueprint in `render.yaml`. In Render, create a new Blueprint from the repository and configure these environment secrets before the first deploy:
+
+- `AGATHA_OWNER_IDENTIFIER`: the username or email used to sign in.
+- `AGATHA_OWNER_PASSWORD`: a unique password of at least 16 characters. The account is provisioned on first startup; public account creation is disabled in hosted mode.
+- `OPENAI_API_KEY`: optional, but configure a hosted model provider if you want LLM chat and image generation. Other supported providers can be configured from the authenticated dashboard.
+
+The Blueprint builds `Dockerfile`, installs the core Python packages from `requirements.txt` plus FFmpeg and ClamAV system packages, starts `render_start.py`, binds the dashboard to Render's `PORT`, exposes `/healthz` for health checks, and mounts a 1 GB persistent disk at `/var/data`. ClamAV signature refresh starts in the background and does not delay web startup. The disk is required to retain the owner account, sessions, chat history, settings, uploads, artifacts, and other app data across deploys. The Starter web service and persistent disk are paid Render resources; check current Render pricing before deploying.
+
+Do not add `requirements-local-llm.txt` unless you intend to build and host the large Torch/Transformers stack. `requirements-voice.txt` is for local microphones/TTS and is intentionally not installed on Render. `yt-dlp` is included in the core requirements for creator URL ingestion; FFmpeg and ClamAV are installed by the Docker image rather than pip.
+
+Hosted mode uses the dashboard and cloud-capable tools, but the server cannot control the user's physical device: microphone/speaker, Music.app/Spotify, macOS Calendar/Notes/Mail, or local folders on the user's computer. Those require Agatha to run locally or a separately installed companion app. Features that require local device APIs are not made remotely available by deploying this service.
+
+The normal local dashboard still binds only to loopback. Do not set `DASHBOARD_HOST=0.0.0.0` outside the hosted configuration; hosted mode adds secure cookies, same-origin POST checks, a pre-provisioned owner, and disables public signup.
 
 Keep API tokens and `.env` out of source control. Runtime histories and local task data are ignored by `.gitignore`.
 

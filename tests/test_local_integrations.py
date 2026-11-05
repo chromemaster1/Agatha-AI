@@ -202,6 +202,12 @@ class LocalDashboardAuthTests(unittest.TestCase):
         self.assertIn("margin:auto 0", stylesheet)
         self.assertIn("overflow-y:auto", stylesheet)
 
+    def test_chat_shows_quantum_indicator_while_working(self):
+        self.assertIn("if (data.status.state === 'working') {\n      logEl.insertAdjacentHTML", dashboard._HTML_PAGE)
+        self.assertIn('class="quantumCluster"', dashboard._HTML_PAGE)
+        self.assertIn("Agatha is thinking", dashboard._HTML_PAGE)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", dashboard._HTML_PAGE)
+
     def test_dashboard_requires_login_and_accepts_local_signup(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
                 patch.object(tools_auth, "DATA_DIR", temp_dir), \

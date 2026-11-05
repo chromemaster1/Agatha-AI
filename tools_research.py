@@ -7,7 +7,9 @@ try:
 except Exception:
     record_artifact = None
 
-RESEARCH_DIR = os.path.expanduser("~/Documents/Agent Research")
+_DATA_DIR = os.getenv("AGATHA_DATA_DIR")
+RESEARCH_DIR = os.getenv("AGATHA_RESEARCH_DIR", os.path.join(_DATA_DIR, "research")
+                         if _DATA_DIR else os.path.expanduser("~/Documents/Agent Research"))
 
 
 def web_search_free(query: str, max_results: int = 6) -> list:

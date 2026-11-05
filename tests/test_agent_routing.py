@@ -193,6 +193,26 @@ class UploadedDocumentSummaryTests(unittest.TestCase):
         self.assertIsNone(result)
         summarize.assert_not_called()
 
+    def test_investor_review_prompt_covers_requested_parts_and_missing_evidence(self):
+        calls = []
+
+        def summarize(system, prompt, tier="main"):
+            calls.append((system, prompt, tier))
+            return "evidence notes" if tier == "light" else "Complete evidence-based review."
+
+        attachment = {"name": "pitch.txt", "text": "Market claims, product details, and limited traction evidence."}
+        request = "Summarize this startup, point out pitfalls, and rate investment likelihood from 1-100"
+        with patch.object(main_agent, "_plain_llm", side_effect=summarize):
+            result = main_agent._summarize_uploaded_documents(request, [attachment])
+
+        final_system, final_prompt, tier = calls[-1]
+        self.assertIn("Complete evidence-based review", result)
+        self.assertEqual(tier, "main")
+        self.assertIn("potential pitfalls", final_system)
+        self.assertIn("evidence-based investability score", final_system)
+        self.assertIn("Missing evidence earns a conservative score", final_system)
+        self.assertIn("rate investment likelihood", final_prompt)
+
 
 class AuthenticationSpeechGateTests(unittest.TestCase):
     def test_speak_is_silent_before_dashboard_authentication(self):
@@ -306,6 +326,67 @@ class CreatorClipRoutingTests(unittest.TestCase):
         )
         self.assertTrue(main_agent._is_video_music_upload("", attachments, history))
 
+
+class MusicRoutingTests(unittest.TestCase):
+    def test_play_song_routes_to_music_library(self):
+        with patch.object(main_agent.tools_music, "play_music", return_value="playing") as play:
+            result = main_agent._parse_music("Play song Blue in Green in Music", "play song blue in green in music")
+
+        self.assertEqual(result, "playing")
+        play.assert_called_once_with(query="Blue in Green", player="music")
+
+    def test_play_local_audio_path_routes_to_file_player(self):
+        path = "/Users/example/Music/quiet morning mix.mp3"
+        with patch.object(main_agent.tools_music, "play_music", return_value="playing") as play:
+            result = main_agent._parse_music(f'Play "{path}"', f'play "{path.lower()}"')
+
+        self.assertEqual(result, "playing")
+        play.assert_called_once_with(file_path=path, player="music")
+
+    def test_pause_and_skip_route_to_selected_player(self):
+        with patch.object(main_agent.tools_music, "control_music", return_value="paused") as control:
+            result = main_agent._parse_music("Pause Spotify", "pause spotify")
+
+        self.assertEqual(result, "paused")
+        control.assert_called_once_with("pause", player="spotify")
+
+
+class PublicVoiceFocusTests(unittest.TestCase):
+    def setUp(self):
+        main_agent._PUBLIC_VOICE_MODE.clear()
+        main_agent._standby.clear()
+
+    def tearDown(self):
+        main_agent._PUBLIC_VOICE_MODE.clear()
+        main_agent._standby.clear()
+
+    def test_public_mode_discards_unaddressed_speech_and_strips_wake_phrase(self):
+        main_agent._PUBLIC_VOICE_MODE.set()
+        self.assertIsNone(main_agent._voice_input_from_transcript("the train leaves at six"))
+
+        with patch.object(main_agent, "_is_likely_self_echo", return_value=False):
+            queued = main_agent._voice_input_from_transcript("Hey Agatha, play some music")
+
+        self.assertEqual(queued, ("voice", "play some music"))
+        self.assertTrue(main_agent._PUBLIC_VOICE_MODE.is_set())
+
+    def test_public_voice_mode_can_be_toggled_with_text_commands(self):
+        enabled = main_agent._parse_public_voice_mode("Enable public voice mode", "enable public voice mode")
+        self.assertTrue(main_agent._PUBLIC_VOICE_MODE.is_set())
+        self.assertIn("not biometric", enabled)
+
+        disabled = main_agent._parse_public_voice_mode("Turn off public voice mode", "turn off public voice mode")
+        self.assertFalse(main_agent._PUBLIC_VOICE_MODE.is_set())
+        self.assertIn("off", disabled)
+
+    def test_standby_wake_phrase_still_clears_standby(self):
+        main_agent._standby.set()
+        with patch.object(main_agent, "_is_likely_self_echo", return_value=False):
+            queued = main_agent._voice_input_from_transcript("Hey Agatha, what's next")
+
+        self.assertEqual(queued, ("wake", "what's next"))
+        self.assertFalse(main_agent._standby.is_set())
+
     def test_image_request_routes_to_image_generator(self):
         request = "Generate an image of a lighthouse in a storm"
         with patch.object(main_agent.tools_creator, "generate_image", return_value="generated") as generate:
@@ -365,6 +446,37 @@ class OllamaGenerationBudgetTests(unittest.TestCase):
 
     def test_tool_free_long_form_tasks_keep_large_budget(self):
         self.assertEqual(main_agent._ollama_output_budget(None), 1024)
+
+    def test_report_requests_get_a_larger_budget_without_changing_short_chat(self):
+        report_messages = [{"role": "user", "content": "Finish the extensive investor report and rate likelihood."}]
+        short_messages = [{"role": "user", "content": "Hello, how are you?"}]
+        continuation_messages = [
+            *report_messages,
+            {"role": "assistant", "content": "The first section stopped early."},
+            {"role": "user", "content": "Continue from where it stopped and finish the remaining sections."},
+        ]
+
+        self.assertEqual(main_agent._ollama_output_budget([], report_messages), 1800)
+        self.assertEqual(main_agent._ollama_output_budget([], short_messages), 120)
+        self.assertEqual(main_agent._ollama_output_budget([], continuation_messages), 1800)
+        self.assertEqual(main_agent._ollama_output_budget([_tool("research_topic")], report_messages), 1200)
+
+    def test_provider_truncated_long_report_gets_continued(self):
+        partial = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content="The company targets young users in", tool_calls=[]),
+            finish_reason="length")])
+        continued = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content="Sub-Saharan Africa. The document omits paid-user metrics.", tool_calls=[]),
+            finish_reason="stop")])
+        messages = [{"role": "user", "content": "Write a comprehensive investor report with risks."}]
+
+        with patch.object(main_agent, "get_llm_response", return_value=continued) as generate:
+            result = main_agent._complete_truncated_response(messages, partial)
+
+        self.assertIn("targets young users in", result.choices[0].message.content)
+        self.assertIn("omits paid-user metrics", result.choices[0].message.content)
+        generate.assert_called_once()
+        self.assertEqual(generate.call_args.kwargs["tools"], [])
 
 
 class ConversationHistoryTests(unittest.TestCase):
