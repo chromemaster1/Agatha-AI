@@ -46,3 +46,6 @@ google-auth-oauthlib       # YouTube OAuth2 consent flow
 # Video URL ingestion used by the creator tools. FFmpeg is installed by the
 # Render Docker image (and should be installed separately on local machines).
 yt-dlp
+
+# Render's single-worker WSGI gateway; local development does not require it.
+gunicorn>=22,<24
