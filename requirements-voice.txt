@@ -1,0 +1,8 @@
+# Optional microphone and speech-output stack. PyAudio support depends on the
+# Python version and OS; this is intentionally not part of the core install.
+-r requirements.txt
+pyttsx3
+SpeechRecognition
+PyAudio
+pyobjc; sys_platform == "darwin"
+pyobjc-framework-AVFoundation; sys_platform == "darwin"

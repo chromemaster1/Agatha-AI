@@ -1,0 +1,4 @@
+# Optional fully offline Hugging Face fallback. These packages are large and
+# are not needed when using Ollama or a configured hosted LLM provider.
+transformers
+torch

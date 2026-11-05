@@ -1,0 +1,38 @@
+python-dotenv
+requests
+pywin32; sys_platform == "win32"
+
+# Optional — only needed if you plan to use these specific LLM providers.
+# Comment out any you don't use.
+openai
+anthropic
+
+# Free web research (no API key needed) — used by the 'research <topic>' command.
+# Note: this package was renamed from 'duckduckgo-search' to 'ddgs'.
+ddgs
+
+# PDF export for saved research notes. Import name stays 'fpdf' even
+# though the package is 'fpdf2' (maintained fork, same API).
+fpdf2
+
+# Local text extraction for documents attached to the dashboard.
+pypdf
+python-docx
+python-pptx
+openpyxl
+odfpy
+striprtf
+beautifulsoup4
+
+# Free market data (no API key needed) — used by the market analysis command.
+yfinance
+librosa==0.10.2.post1
+numba==0.61.2
+numpy<2
+scipy<1.15
+
+# Social posting — only needed for the specific platforms you actually use.
+# Bluesky and Instagram/TikTok only need 'requests' (already listed above).
+requests-oauthlib          # X/Twitter (OAuth1.0a)
+google-api-python-client   # YouTube upload
+google-auth-oauthlib       # YouTube OAuth2 consent flow

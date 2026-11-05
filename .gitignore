@@ -1,0 +1,25 @@
+.env
+.venv/
+.venv*/
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# User-specific data and credentials
+agent_memory.json
+artifacts.json
+calendar.json
+chat_history.json
+todo_list.json
+subagents.json
+voice_config.json
+*.token
+token.json
+credentials.json
+
+# Generated user files
+*.ics
+*_cleaned.*
