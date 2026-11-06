@@ -46,7 +46,7 @@ def main() -> None:
 
     data_dir = os.getenv("AGATHA_DATA_DIR", "").strip()
     if not data_dir:
-        raise RuntimeError("Set AGATHA_DATA_DIR to the mounted persistent disk path, such as /var/data.")
+        raise RuntimeError("Set AGATHA_DATA_DIR to the mounted persistent disk path, such as /tmp/var/data.")
     os.makedirs(data_dir, exist_ok=True)
     if not os.access(data_dir, os.W_OK):
         raise RuntimeError(f"AGATHA_DATA_DIR is not writable: {data_dir}")

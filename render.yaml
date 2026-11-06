@@ -1,3 +1,4 @@
+
 services:
   - type: web
     name: agatha-dashboard
@@ -15,17 +16,17 @@ services:
       - key: PYTHON_VERSION
         value: 3.12.10
       - key: AGATHA_DATA_DIR
-        value: /var/data
+        value: /tmp/var/data
       - key: AGATHA_CLIP_DIR
         value: /var/data/creator_output
       - key: AGATHA_HOSTED_MODE
         value: "true"
       - key: DASHBOARD_HOST
-        value: 127.0.0.1
+        value: 0.0.0.0
       - key: DASHBOARD_PORT
         value: "10001"
       - key: AGATHA_OWNER_NAME
-        value: Owner
+        value: Creator
       - key: AGATHA_OWNER_IDENTIFIER
         sync: false
       - key: AGATHA_OWNER_PASSWORD
