@@ -3,14 +3,14 @@ services:
   - type: web
     name: agatha-dashboard
     runtime: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /healthz
     autoDeploy: true
-    disk:
+    #disk:
       name: agatha-data
-      mountPath: /var/data
+      mountPath: /tmp/var/data
       sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
@@ -18,7 +18,7 @@ services:
       - key: AGATHA_DATA_DIR
         value: /tmp/var/data
       - key: AGATHA_CLIP_DIR
-        value: /var/data/creator_output
+        value: /tmp/var/data/creator_output
       - key: AGATHA_HOSTED_MODE
         value: "true"
       - key: DASHBOARD_HOST
