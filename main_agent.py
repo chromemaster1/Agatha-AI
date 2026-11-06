@@ -236,9 +236,9 @@ except ImportError:
 
 
 # --- Environment & Key Discovery ---
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 # Defaults are small-parameter tags on purpose (1.5B/1B/0.5B) — the untagged
@@ -254,34 +254,62 @@ OLLAMA_FALLBACK_MODELS = [
     m.strip() for m in os.getenv("OLLAMA_FALLBACK_MODELS", "llama3.2:1b,qwen2.5:0.5b").split(",") if m.strip()
 ]
 
+groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=GROQ_API_KEY) if (GROQ_API_KEY and OpenAI) else None
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if (OPENAI_API_KEY and OpenAI) else None
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if (ANTHROPIC_API_KEY and anthropic) else None
-groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=GROQ_API_KEY) if (GROQ_API_KEY and OpenAI) else None
 _gemini_client = None
 _grok_client = None
 
 
 def _configured_provider_clients():
-    """Resolve dashboard-saved provider credentials at request time."""
-    global _gemini_client, _grok_client
-    openai_key = os.getenv("OPENAI_API_KEY")
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-    groq_key = os.getenv("GROQ_API_KEY")
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    grok_key = os.getenv("GROK_API_KEY")
-    clients = {
-        "anthropic": (anthropic.Anthropic(api_key=anthropic_key) if anthropic_key and anthropic else None),
-        "openai": (OpenAI(api_key=openai_key) if openai_key and OpenAI else None),
-        "groq": (OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
-                 if groq_key and OpenAI else None),
-    }
-    if gemini_key and OpenAI:
-        _gemini_client = OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                                api_key=gemini_key)
-    if grok_key and OpenAI:
-        _grok_client = OpenAI(base_url="https://api.x.ai/v1", api_key=grok_key)
-    clients["gemini"] = _gemini_client if gemini_key else None
-    clients["grok"] = _grok_client if grok_key else None
+    """Build clients from both Render/.env variables and dashboard-saved settings.
+
+    tools_settings.get_setting() checks the settings file first and environment
+    variables second. Reading it here (on every request) is important: dashboard
+    credentials may have been saved before this process started, so they will not
+    necessarily exist in os.environ.
+    """
+    try:
+        import tools_settings
+        get_key = tools_settings.get_setting
+    except Exception as exc:
+        print(f"[Info] Dashboard LLM settings unavailable; using environment only ({type(exc).__name__}).")
+        get_key = lambda key, default=None: os.getenv(key, default)
+
+    keys = {name: (get_key(env_name, os.getenv(env_name)) or "").strip()
+            for name, env_name in {
+                "openai": "OPENAI_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+                "groq": "GROQ_API_KEY",
+                "gemini": "GEMINI_API_KEY",
+                "grok": "GROK_API_KEY",
+            }.items()}
+
+    clients = {name: None for name in keys}
+    if OpenAI:
+        factories = {
+            "groq": lambda key: OpenAI(base_url="https://api.groq.com/openai/v1", api_key=key, timeout=30, max_retries=1),
+            "gemini": lambda key: OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=key, timeout=30, max_retries=1),
+            "openai": lambda key: OpenAI(api_key=key, timeout=30, max_retries=1),
+            "grok": lambda key: OpenAI(base_url="https://api.x.ai/v1", api_key=key, timeout=30, max_retries=1),
+        }
+        for name, factory in factories.items():
+            if keys.get(name):
+                try:
+                    clients[name] = factory(keys[name])
+                except Exception as exc:
+                    print(f"[Warning] Could not initialise {name} client ({type(exc).__name__}).")
+    elif any(keys.get(name) for name in ("groq", "gemini", "openai", "grok")):
+        print("[Warning] LLM API keys are configured, but the 'openai' Python package is unavailable.")
+
+    if keys.get("anthropic") and anthropic:
+        try:
+            clients["anthropic"] = anthropic.Anthropic(api_key=keys["anthropic"], timeout=30, max_retries=1)
+        except Exception as exc:
+            print(f"[Warning] Could not initialise Anthropic client ({type(exc).__name__}).")
+    elif keys.get("anthropic") and not anthropic:
+        print("[Warning] ANTHROPIC_API_KEY is configured, but the 'anthropic' package is unavailable.")
+
     return clients
 
 
@@ -327,11 +355,12 @@ def _review_with_agent_council(user_input: str, answer: str, evidence: str = "")
         + (f"\n\nTool result evidence (do not repeat sensitive values):\n{evidence[:5000]}" if evidence else "")
     )
     fallbacks = {
+
+        "groq": _GROQ_MODEL["light"],
         "anthropic": _ANTHROPIC_MODEL["light"],
         "openai": _OPENAI_MODEL["light"],
         "gemini": "gemini-2.5-flash",
         "grok": "grok-3-mini",
-        "groq": _GROQ_MODEL["light"],
     }
     for provider_id in provider_ids[:3]:
         client = clients.get(provider_id)
@@ -473,12 +502,12 @@ def _trim_conversation_history(messages, max_turns: int = 12):
 # Two model tiers. Agatha herself ("main") talks to you; short-lived specialist sub-agents
 # ("light") only pick a tool and fill in its arguments, so they run on a cheaper model.
 # Override any of these in .env.
+_GROQ_MODEL = {"main": os.getenv("AGATHA_GROQ_MODEL", "llama-3.3-70b-versatile"),
+               "light": os.getenv("AGATHA_LIGHT_GROQ_MODEL", "llama-3.1-8b-instant")}
 _ANTHROPIC_MODEL = {"main": os.getenv("AGATHA_ANTHROPIC_MODEL", "claude-sonnet-5-5"),
                     "light": os.getenv("AGATHA_LIGHT_ANTHROPIC_MODEL", "claude-haiku-5-5")}
 _OPENAI_MODEL = {"main": os.getenv("AGATHA_OPENAI_MODEL", "gpt-4o-mini"),
                  "light": os.getenv("AGATHA_LIGHT_OPENAI_MODEL", "gpt-4o-mini")}
-_GROQ_MODEL = {"main": os.getenv("AGATHA_GROQ_MODEL", "llama-3.3-70b-versatile"),
-               "light": os.getenv("AGATHA_LIGHT_GROQ_MODEL", "llama-3.1-8b-instant")}
 OLLAMA_LIGHT_MODEL = os.getenv("OLLAMA_LIGHT_MODEL", "")  # e.g. qwen2.5:1.5b even if OLLAMA_MODEL is bigger
 
 
@@ -629,9 +658,9 @@ NO_LLM_MARKER = "\x00NO_LLM_AVAILABLE\x00"
 def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
     """
     Tries providers in sequence:
-    1. Anthropic Claude (Paid)   -- with real tool-calling support
-    2. OpenAI (Paid)
-    3. Groq (Free API Key)
+    1. Groq (Free API Key)
+    2. Anthropic Claude (Paid)   -- with real tool-calling support
+    3. OpenAI (Paid)
     4. Ollama (Free Local Server) -- with real tool-calling support + readiness check
     5. Hugging Face Inference API / Local Pipeline (Free)
     6. Echo Fallback
@@ -671,14 +700,16 @@ def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
             finish_reason = "length" if getattr(response, "stop_reason", "") == "max_tokens" else "stop"
             return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason=finish_reason)])
         except Exception as e:
-            print(f"[Warning] Claude API execution failed: {e}")
+            status = getattr(e, "status_code", None)
+            suffix = f", HTTP {status}" if status else ""
+            print(f"[Warning] Anthropic request failed ({type(e).__name__}{suffix}).")
 
     # 2. OpenAI-compatible linked providers
     for provider_id, fallback in (
-        ("openai", _OPENAI_MODEL.get(tier, _OPENAI_MODEL["main"])),
-        ("gemini", "gemini-2.5-flash"),
-        ("grok", "grok-3-mini"),
         ("groq", _GROQ_MODEL.get(tier, _GROQ_MODEL["main"])),
+        ("gemini", "gemini-2.5-flash"),
+        ("openai", _OPENAI_MODEL.get(tier, _OPENAI_MODEL["main"])),
+        ("grok", "grok-3-mini"),
     ):
         client = configured_clients.get(provider_id)
         if not client:
@@ -691,7 +722,9 @@ def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
                 tool_choice=tool_choice,
             )
         except Exception as e:
-            print(f"[Warning] {provider_id} API execution failed: {e}")
+            status = getattr(e, "status_code", None)
+            suffix = f", HTTP {status}" if status else ""
+            print(f"[Warning] {provider_id} request failed ({type(e).__name__}{suffix}).")
 
     # 4. Ollama (Free Local Server e.g. http://localhost:11434), with
     #    multi-model fallback: if the primary model crashes, isn't pulled,
@@ -789,10 +822,12 @@ def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
     # fallback text into a file as if it were real generated code.
     prompt = _last_user_text(messages)
     text = (NO_LLM_MARKER +
-            "I don't have any LLM available right now to answer that — no paid API key is set, and "
-            "Ollama isn't running or reachable. Start it with 'ollama serve', set OPENAI_API_KEY / "
-            "ANTHROPIC_API_KEY / GROQ_API_KEY in your .env, or install the offline fallback model with "
-            f"'{sys.executable} -m pip install transformers torch'. What you said was: " + prompt)
+            "I couldn't get a response from any configured language model. This does not necessarily "
+            "mean your API key is missing: the provider may be rejecting the key, the selected model "
+            "may be unavailable, a free-tier quota may have been reached, or the network may be down. "
+            "Check the Render runtime logs for the provider-specific failure, and verify that GROQ_API_KEY "
+            "or another provider key is configured in Render Environment or Agatha Settings. "
+            "I won't guess at an answer while the language model is unavailable. Your request was: " + prompt)
     msg = SimpleNamespace(content=text, tool_calls=[])
     return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
 
