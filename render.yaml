@@ -9,9 +9,6 @@ services:
     healthCheckPath: /healthz
     autoDeploy: true
     #disk:
-      name: agatha-data
-      mountPath: /tmp/var/data
-      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.10
@@ -32,4 +29,12 @@ services:
       - key: AGATHA_OWNER_PASSWORD
         sync: false
       - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROK_API_KEY
         sync: false

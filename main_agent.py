@@ -236,9 +236,9 @@ except ImportError:
 
 
 # --- Environment & Key Discovery ---
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 # Defaults are small-parameter tags on purpose (1.5B/1B/0.5B) — the untagged
@@ -254,27 +254,59 @@ OLLAMA_FALLBACK_MODELS = [
     m.strip() for m in os.getenv("OLLAMA_FALLBACK_MODELS", "llama3.2:1b,qwen2.5:0.5b").split(",") if m.strip()
 ]
 
-groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=GROQ_API_KEY) if (GROQ_API_KEY and OpenAI) else None
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if (OPENAI_API_KEY and OpenAI) else None
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if (ANTHROPIC_API_KEY and anthropic) else None
+groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=GROQ_API_KEY) if (GROQ_API_KEY and OpenAI) else None
 _gemini_client = None
 _grok_client = None
 
 
-def _configured_provider_clients():
-    """Build clients from both Render/.env variables and dashboard-saved settings.
+def _read_dashboard_setting_file(key, default=None):
+    """Read one dashboard setting even when an older tools_settings module is deployed."""
+    candidates = []
+    explicit = os.getenv("AGATHA_SETTINGS_FILE")
+    data_dir = os.getenv("AGATHA_DATA_DIR")
+    if explicit:
+        candidates.append(explicit)
+    if data_dir:
+        candidates.append(os.path.join(data_dir, "agent_settings.json"))
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_settings.json"))
+    for path in dict.fromkeys(candidates):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if isinstance(data, dict) and data.get(key):
+                return data[key]
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            print(f"[Info] Could not read dashboard settings file ({type(exc).__name__}).")
+    return default
 
-    tools_settings.get_setting() checks the settings file first and environment
-    variables second. Reading it here (on every request) is important: dashboard
-    credentials may have been saved before this process started, so they will not
-    necessarily exist in os.environ.
-    """
+
+def _get_agent_setting(key, default=None):
+    """Resolve dashboard-saved settings first, then Render environment variables."""
     try:
         import tools_settings
-        get_key = tools_settings.get_setting
+        getter = getattr(tools_settings, "get_setting", None)
+        if callable(getter):
+            value = getter(key, default)
+            if value not in (None, ""):
+                return value
+        else:
+            module_path = getattr(tools_settings, "__file__", "unknown module path")
+            print(f"[Warning] tools_settings.get_setting is missing in {module_path}; using direct settings-file lookup.")
     except Exception as exc:
-        print(f"[Info] Dashboard LLM settings unavailable; using environment only ({type(exc).__name__}).")
-        get_key = lambda key, default=None: os.getenv(key, default)
+        print(f"[Warning] Could not load dashboard settings helper ({type(exc).__name__}); using direct settings-file lookup.")
+    value = _read_dashboard_setting_file(key, None)
+    if value not in (None, ""):
+        return value
+    return os.getenv(key, default)
+
+
+def _configured_provider_clients():
+    """Build clients from dashboard-saved settings or Render environment variables."""
+    get_key = _get_agent_setting
 
     keys = {name: (get_key(env_name, os.getenv(env_name)) or "").strip()
             for name, env_name in {
@@ -314,30 +346,39 @@ def _configured_provider_clients():
 
 
 def _provider_model(provider: str, fallback: str) -> str:
-    if provider == "anthropic":
-        default = os.getenv("AGATHA_ANTHROPIC_MODEL", fallback)
-    elif provider == "openai":
-        default = os.getenv("AGATHA_OPENAI_MODEL", fallback)
-    elif provider == "groq":
-        default = os.getenv("AGATHA_GROQ_MODEL", fallback)
-    elif provider == "gemini":
-        default = "gemini-2.5-flash"
-    else:
-        default = "grok-3-mini"
-    try:
-        import tools_settings
-        model_key = next((p["model_key"] for p in tools_settings.AI_AGENT_PROVIDERS if p["id"] == provider), "")
-        return tools_settings.get_setting(model_key, default) if model_key else default
-    except Exception:
-        return default
+    """Return a configured model, migrating known retired defaults automatically."""
+    model_keys = {
+        "anthropic": "AGATHA_ANTHROPIC_MODEL",
+        "openai": "AGATHA_OPENAI_MODEL",
+        "groq": "AGATHA_GROQ_MODEL",
+        "gemini": "AGATHA_GEMINI_MODEL",
+        "grok": "AGATHA_GROK_MODEL",
+    }
+    model = _get_agent_setting(model_keys.get(provider, ""), fallback) if provider in model_keys else fallback
+    model = str(model or fallback).strip()
+    retired = {
+        "anthropic": {
+            "claude-sonnet-5-5": "claude-sonnet-5",
+            "claude-haiku-5-5": "claude-haiku-4-5",
+        },
+        "groq": {
+            "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+            "llama-3.1-8b-instant": "openai/gpt-oss-20b",
+        },
+    }
+    replacement = retired.get(provider, {}).get(model)
+    if replacement:
+        print(f"[Info] Migrating retired {provider} model '{model}' to '{replacement}'.")
+        return replacement
+    return model
 
 
 def _linked_provider_ids() -> list[str]:
-    try:
-        import tools_settings
-        return [provider["id"] for provider in tools_settings.get_agent_providers() if provider["connected"]]
-    except Exception:
-        return []
+    providers = {
+        "anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+        "gemini": "GEMINI_API_KEY", "grok": "GROK_API_KEY", "groq": "GROQ_API_KEY",
+    }
+    return [provider for provider, key in providers.items() if _get_agent_setting(key)]
 
 
 def _review_with_agent_council(user_input: str, answer: str, evidence: str = "") -> str:
@@ -355,12 +396,11 @@ def _review_with_agent_council(user_input: str, answer: str, evidence: str = "")
         + (f"\n\nTool result evidence (do not repeat sensitive values):\n{evidence[:5000]}" if evidence else "")
     )
     fallbacks = {
-
-        "groq": _GROQ_MODEL["light"],
         "anthropic": _ANTHROPIC_MODEL["light"],
         "openai": _OPENAI_MODEL["light"],
         "gemini": "gemini-2.5-flash",
         "grok": "grok-3-mini",
+        "groq": _GROQ_MODEL["light"],
     }
     for provider_id in provider_ids[:3]:
         client = clients.get(provider_id)
@@ -502,12 +542,12 @@ def _trim_conversation_history(messages, max_turns: int = 12):
 # Two model tiers. Agatha herself ("main") talks to you; short-lived specialist sub-agents
 # ("light") only pick a tool and fill in its arguments, so they run on a cheaper model.
 # Override any of these in .env.
-_GROQ_MODEL = {"main": os.getenv("AGATHA_GROQ_MODEL", "llama-3.3-70b-versatile"),
-               "light": os.getenv("AGATHA_LIGHT_GROQ_MODEL", "llama-3.1-8b-instant")}
-_ANTHROPIC_MODEL = {"main": os.getenv("AGATHA_ANTHROPIC_MODEL", "claude-sonnet-5-5"),
-                    "light": os.getenv("AGATHA_LIGHT_ANTHROPIC_MODEL", "claude-haiku-5-5")}
+_ANTHROPIC_MODEL = {"main": os.getenv("AGATHA_ANTHROPIC_MODEL", "claude-sonnet-5"),
+                    "light": os.getenv("AGATHA_LIGHT_ANTHROPIC_MODEL", "claude-haiku-4-5")}
 _OPENAI_MODEL = {"main": os.getenv("AGATHA_OPENAI_MODEL", "gpt-4o-mini"),
                  "light": os.getenv("AGATHA_LIGHT_OPENAI_MODEL", "gpt-4o-mini")}
+_GROQ_MODEL = {"main": os.getenv("AGATHA_GROQ_MODEL", "openai/gpt-oss-120b"),
+               "light": os.getenv("AGATHA_LIGHT_GROQ_MODEL", "openai/gpt-oss-20b")}
 OLLAMA_LIGHT_MODEL = os.getenv("OLLAMA_LIGHT_MODEL", "")  # e.g. qwen2.5:1.5b even if OLLAMA_MODEL is bigger
 
 
@@ -658,9 +698,9 @@ NO_LLM_MARKER = "\x00NO_LLM_AVAILABLE\x00"
 def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
     """
     Tries providers in sequence:
-    1. Groq (Free API Key)
-    2. Anthropic Claude (Paid)   -- with real tool-calling support
-    3. OpenAI (Paid)
+    1. Anthropic Claude (Paid)   -- with real tool-calling support
+    2. OpenAI (Paid)
+    3. Groq (Free API Key)
     4. Ollama (Free Local Server) -- with real tool-calling support + readiness check
     5. Hugging Face Inference API / Local Pipeline (Free)
     6. Echo Fallback
@@ -702,7 +742,12 @@ def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
         except Exception as e:
             status = getattr(e, "status_code", None)
             suffix = f", HTTP {status}" if status else ""
-            print(f"[Warning] Anthropic request failed ({type(e).__name__}{suffix}).")
+            detail = getattr(e, "message", None) or str(e)
+            secret = os.getenv("ANTHROPIC_API_KEY")
+            if secret:
+                detail = detail.replace(secret, "[REDACTED]")
+            detail = " ".join(str(detail).split())[:350]
+            print(f"[Warning] Anthropic request failed ({type(e).__name__}{suffix}): {detail}")
 
     # 2. OpenAI-compatible linked providers
     for provider_id, fallback in (
@@ -715,16 +760,28 @@ def get_llm_response(messages, tools=None, tool_choice="auto", tier="main"):
         if not client:
             continue
         try:
-            return client.chat.completions.create(
-                model=_provider_model(provider_id, fallback),
-                messages=_messages_for_openai(messages),
-                tools=tools,
-                tool_choice=tool_choice,
-            )
+            request_kwargs = {
+                "model": _provider_model(provider_id, fallback),
+                "messages": _messages_for_openai(messages),
+            }
+            # Sending tool_choice="auto" without a tools array is rejected by
+            # several OpenAI-compatible APIs with HTTP 400. Omit both fields
+            # for ordinary text-only requests.
+            if tools:
+                request_kwargs["tools"] = tools
+                request_kwargs["tool_choice"] = tool_choice or "auto"
+            return client.chat.completions.create(**request_kwargs)
         except Exception as e:
             status = getattr(e, "status_code", None)
             suffix = f", HTTP {status}" if status else ""
-            print(f"[Warning] {provider_id} request failed ({type(e).__name__}{suffix}).")
+            detail = getattr(e, "message", None) or str(e)
+            for secret in (os.getenv("GROQ_API_KEY"), os.getenv("OPENAI_API_KEY"),
+                           os.getenv("GEMINI_API_KEY"), os.getenv("GROK_API_KEY"),
+                           os.getenv("ANTHROPIC_API_KEY")):
+                if secret:
+                    detail = detail.replace(secret, "[REDACTED]")
+            detail = " ".join(str(detail).split())[:350]
+            print(f"[Warning] {provider_id} request failed ({type(e).__name__}{suffix}): {detail}")
 
     # 4. Ollama (Free Local Server e.g. http://localhost:11434), with
     #    multi-model fallback: if the primary model crashes, isn't pulled,

@@ -1194,6 +1194,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(200, _HTML_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif self.path == "/favicon.ico":
+            # Browsers request this automatically; do not require a login for it.
+            self._send(204, b"", "image/x-icon")
         elif self.path == "/healthz":
             self._send_json(200, {"status": "ok"})
         elif self.path == "/api/session":
